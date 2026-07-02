@@ -1,0 +1,130 @@
+// Deluge Custom Function: get_distance_details_free
+// Category: Standalone, Invoke as REST API: Yes, Return Type: Map
+// Argument (auto-provided when REST API = Yes): crmAPIRequest (Map)
+//
+// Uses free, keyless services — no billing account needed anywhere:
+//   - Nominatim (OpenStreetMap) for geocoding the contact's address
+//   - OSRM public demo server for driving distance/duration + route geometry
+//
+// Note: no live traffic data with this free combo — durations are typical/static estimates.
+// Note: Nominatim's usage policy caps public requests at ~1/sec and requires a
+// descriptive User-Agent (already set below). See README.md > "Rate limits" for details.
+
+crmMap = crmAPIRequest.toMap();
+paramsMap = crmMap.get("params");
+argumentsStr = paramsMap.get("arguments");
+argsMap = argumentsStr.toMap();
+contactId = argsMap.get("contactId");
+originLat = argsMap.get("originLat");
+originLng = argsMap.get("originLng");
+
+response = Map();
+
+if(originLat == null || originLng == null || originLat == "" || originLng == "")
+{
+	response.put("error","Could not determine your current location. Try entering coordinates manually.");
+	return response;
+}
+
+contactRec = zoho.crm.getRecordById("Contacts",contactId);
+
+street = ifnull(contactRec.get("Mailing_Street"),"");
+city = ifnull(contactRec.get("Mailing_City"),"");
+state = ifnull(contactRec.get("Mailing_State"),"");
+zipcode = ifnull(contactRec.get("Mailing_Zip"),"");
+country = ifnull(contactRec.get("Mailing_Country"),"");
+
+destAddress = (street + " " + city + " " + state + " " + zipcode + " " + country).trim();
+
+if(destAddress == "")
+{
+	response.put("error","This contact has no mailing address on file.");
+	return response;
+}
+
+// --- Step 1: Geocode the contact's address via Nominatim ---
+geoParams = Map();
+geoParams.put("format","json");
+geoParams.put("q",destAddress);
+geoParams.put("limit","1");
+geoParams.put("accept-language","en");
+
+geoHeaders = Map();
+// Nominatim's usage policy requires a descriptive User-Agent identifying the app
+geoHeaders.put("User-Agent","ZohoCRM-ContactDistanceWidget/1.0 (internal CRM extension)");
+
+geoResp = invokeurl
+[
+	url :"https://nominatim.openstreetmap.org/search"
+	type :GET
+	parameters:geoParams
+	headers:geoHeaders
+];
+
+if(geoResp == null || geoResp.size() == 0)
+{
+	response.put("error","Could not find this address on the map. It may be too vague or contain a typo.");
+	return response;
+}
+
+geoResult = geoResp.get(0);
+destLat = geoResult.get("lat");
+destLon = geoResult.get("lon");
+destDisplayName = geoResult.get("display_name");
+
+// --- Step 1b: Reverse geocode the origin coordinates into a readable address ---
+reverseParams = Map();
+reverseParams.put("format","json");
+reverseParams.put("lat",originLat);
+reverseParams.put("lon",originLng);
+reverseParams.put("accept-language","en");
+
+originDisplayName = originLat + ", " + originLng;
+// fallback if reverse lookup fails
+
+reverseResp = invokeurl
+[
+	url :"https://nominatim.openstreetmap.org/reverse"
+	type :GET
+	parameters:reverseParams
+	headers:geoHeaders
+];
+
+if(reverseResp != null && reverseResp.containKey("display_name"))
+{
+	originDisplayName = reverseResp.get("display_name");
+}
+
+// --- Step 2: Get route + distance + duration from OSRM ---
+osrmUrl = "https://router.project-osrm.org/route/v1/driving/" + originLng + "," + originLat + ";" + destLon + "," + destLat + "?overview=full&geometries=geojson";
+
+osrmResp = invokeurl
+[
+	url :osrmUrl
+	type :GET
+];
+
+if(osrmResp.get("code") != "Ok")
+{
+	response.put("error","Could not calculate a route (" + osrmResp.get("code") + "). The location may be unreachable by road.");
+	return response;
+}
+
+route = osrmResp.get("routes").get(0);
+distanceMeters = route.get("distance");
+durationSeconds = route.get("duration");
+routeGeometry = route.get("geometry").get("coordinates");
+// list of [lon, lat] pairs
+
+response.put("destinationAddress",destAddress);
+response.put("resolvedDestination",destDisplayName);
+response.put("resolvedOrigin",originDisplayName);
+response.put("originLat",originLat);
+response.put("originLng",originLng);
+response.put("destLat",destLat);
+response.put("destLng",destLon);
+response.put("distanceMeters",distanceMeters);
+response.put("durationSeconds",durationSeconds);
+response.put("routeGeometry",routeGeometry);
+
+return response;

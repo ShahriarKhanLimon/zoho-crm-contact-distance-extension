@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Distance to Contact</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+      background: #f4f6f9;
+      color: #2c3e50;
+      padding: 12px;
+      font-size: 13px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 12px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    h3 {
+      font-size: 13px; color: #34495e; margin-bottom: 8px;
+      border-bottom: 1px solid #eee; padding-bottom: 4px;
+    }
+    .stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+    .stat { background: #f0f4f8; border-radius: 6px; padding: 8px 10px; flex: 1 1 45%; min-width: 120px; }
+    .stat .label { font-size: 11px; color: #7f8c8d; }
+    .stat .value { font-size: 15px; font-weight: 600; }
+    .addr-line { font-size: 12px; color: #7f8c8d; margin-bottom: 6px; }
+    .addr-line b { color: #34495e; }
+    .note { font-size: 11px; color: #95a5a6; margin-top: 8px; font-style: italic; }
+
+    #map { width: 100%; height: 280px; border-radius: 8px; }
+    .loc-label {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      border: none;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+      color: #fff;
+    }
+    .loc-label-you { background: #2980b9; }
+    .loc-label-contact { background: #e74c3c; }
+    .leaflet-tooltip.loc-label::before { display: none; }
+
+    #loading, #error { text-align: center; padding: 24px 10px; color: #7f8c8d; }
+    #error { color: #c0392b; display: none; }
+    .spinner {
+      border: 3px solid #eee; border-top: 3px solid #3498db; border-radius: 50%;
+      width: 26px; height: 26px; margin: 0 auto 8px; animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #content { display: none; }
+
+    #manual-entry {
+      display: none; background: #fff; border-radius: 8px; padding: 12px;
+      margin-top: 10px; text-align: left;
+    }
+    #manual-entry label { font-size: 11px; color: #7f8c8d; display: block; margin-bottom: 3px; }
+    #manual-entry input {
+      width: 100%; padding: 6px 8px; margin-bottom: 8px;
+      border: 1px solid #ddd; border-radius: 5px; font-size: 13px;
+    }
+    #manual-entry button {
+      background: #3498db; color: #fff; border: none; border-radius: 6px;
+      padding: 8px 14px; font-size: 13px; cursor: pointer;
+    }
+    #manual-entry button:hover { background: #2d84c1; }
+    #manual-hint { font-size: 11px; color: #7f8c8d; margin-top: 6px; }
+
+    .powered-by { text-align: right; font-size: 10px; color: #b0b8bf; padding: 4px 2px 4px; }
+    .powered-by a { color: #9aa4ad; text-decoration: none; }
+  </style>
+</head>
+<body>
+
+  <div id="loading">
+    <div class="spinner"></div>
+    <span id="loading-text">Getting your location...</span>
+
+    <div id="manual-entry">
+      <div id="manual-hint" style="margin-bottom:8px;">
+        Couldn't get your location automatically. Enter your coordinates manually
+        (tip: right-click your location on any map app and copy the lat/lng shown).
+      </div>
+      <label for="lat-input">Latitude</label>
+      <input type="text" id="lat-input" placeholder="e.g. 23.8103" />
+      <label for="lng-input">Longitude</label>
+      <input type="text" id="lng-input" placeholder="e.g. 90.4125" />
+      <button id="manual-submit">Use This Location</button>
+    </div>
+  </div>
+
+  <div id="error"></div>
+
+  <div id="content">
+    <div class="card">
+      <div class="addr-line" id="origin-line"></div>
+      <div class="addr-line" id="dest-line"></div>
+      <div class="stats">
+        <div class="stat"><div class="label">Distance</div><div class="value" id="distance-val"></div></div>
+        <div class="stat"><div class="label">Est. Driving Time</div><div class="value" id="duration-val"></div></div>
+      </div>
+      <div class="note">Estimate based on typical road conditions — no live traffic data (free routing service).</div>
+    </div>
+
+    <div class="card">
+      <h3>Route</h3>
+      <div id="map"></div>
+    </div>
+
+    <div class="powered-by">
+      Map data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors &middot;
+      Routing by <a href="https://project-osrm.org/" target="_blank" rel="noopener">OSRM</a>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="ZohoEmbededAppSDK.min.js"></script>
+  <script>
+    var FUNC_NAME = "limongetweatherdetails__get_distance_details_free";
+    var currentContactId = null;
+    var leafletMap = null;
+
+    function showError(msg) {
+      document.getElementById("loading").style.display = "none";
+      var el = document.getElementById("error");
+      el.innerText = msg;
+      el.style.display = "block";
+    }
+
+    function showManualEntry(hintOverride) {
+      document.getElementById("loading-text").style.display = "none";
+      document.querySelector("#loading .spinner").style.display = "none";
+      if (hintOverride) {
+        document.getElementById("manual-hint").innerText = hintOverride;
+      }
+      document.getElementById("manual-entry").style.display = "block";
+    }
+
+    function fetchDistance(lat, lng) {
+      document.getElementById("manual-entry").style.display = "none";
+      document.querySelector("#loading .spinner").style.display = "block";
+      document.getElementById("loading-text").style.display = "block";
+      document.getElementById("loading-text").innerText = "Calculating route...";
+
+      var req_data = {
+        "arguments": JSON.stringify({
+          "contactId": currentContactId,
+          "originLat": lat,
+          "originLng": lng
+        })
+      };
+
+      ZOHO.CRM.FUNCTIONS.execute(FUNC_NAME, req_data)
+        .then(function (resp) {
+          console.log(resp);
+          try {
+            var out = resp && resp.details ? resp.details.output : null;
+            if (!out) { showError("Function returned empty response."); return; }
+            var result = (typeof out === "string") ? JSON.parse(out) : out;
+            render(result, parseFloat(lat), parseFloat(lng));
+          } catch (e) {
+            showError("Could not parse distance data: " + e.message);
+            console.log("Raw response:", resp);
+          }
+        })
+        .catch(function (err) {
+          showError("Function call failed. Check function name and access.");
+          console.log(err);
+        });
+    }
+
+    function formatDistance(meters) {
+      var km = meters / 1000;
+      return km.toFixed(1) + " km (" + (km * 0.621371).toFixed(1) + " mi)";
+    }
+
+    function formatDuration(seconds) {
+      var totalMin = Math.round(seconds / 60);
+      var h = Math.floor(totalMin / 60);
+      var m = totalMin % 60;
+      if (h === 0) return m + " min";
+      return h + "h " + m + "min";
+    }
+
+    function render(result, originLat, originLng) {
+      if (result.error) {
+        showError(result.error);
+        return;
+      }
+
+      document.getElementById("origin-line").innerHTML =
+        "From (you): <b>" + (result.resolvedOrigin || (originLat + ", " + originLng)) + "</b>";
+      document.getElementById("dest-line").innerHTML =
+        "To (contact): <b>" + (result.resolvedDestination || result.destinationAddress) + "</b>";
+      document.getElementById("distance-val").innerText = formatDistance(result.distanceMeters);
+      document.getElementById("duration-val").innerText = formatDuration(result.durationSeconds);
+
+      document.getElementById("loading").style.display = "none";
+      document.getElementById("content").style.display = "block";
+
+      // Build the Leaflet map after the container is visible (Leaflet needs a sized, visible div)
+      setTimeout(function () {
+        var destLat = parseFloat(result.destLat);
+        var destLng = parseFloat(result.destLng);
+
+        if (leafletMap) { leafletMap.remove(); }
+        leafletMap = L.map('map');
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '&copy; OpenStreetMap contributors',
+          maxZoom: 19
+        }).addTo(leafletMap);
+
+        // Distinct colored markers: blue = you, red = contact, both with always-visible labels
+        var originMarker = L.circleMarker([originLat, originLng], {
+          radius: 9, color: '#fff', weight: 2, fillColor: '#2980b9', fillOpacity: 1
+        }).addTo(leafletMap);
+        originMarker.bindTooltip("You", { permanent: true, direction: 'top', offset: [0, -8], className: 'loc-label loc-label-you' });
+
+        var destMarker = L.circleMarker([destLat, destLng], {
+          radius: 9, color: '#fff', weight: 2, fillColor: '#e74c3c', fillOpacity: 1
+        }).addTo(leafletMap);
+        destMarker.bindTooltip("Contact", { permanent: true, direction: 'top', offset: [0, -8], className: 'loc-label loc-label-contact' });
+
+        var routeLatLngs = [];
+        if (result.routeGeometry && result.routeGeometry.length) {
+          for (var i = 0; i < result.routeGeometry.length; i++) {
+            // OSRM returns [lon, lat] — Leaflet wants [lat, lon]
+            routeLatLngs.push([result.routeGeometry[i][1], result.routeGeometry[i][0]]);
+          }
+          var routeLine = L.polyline(routeLatLngs, { color: '#3498db', weight: 4 }).addTo(leafletMap);
+          leafletMap.fitBounds(routeLine.getBounds(), { padding: [20, 20] });
+        } else {
+          var bounds = L.latLngBounds([[originLat, originLng], [destLat, destLng]]);
+          leafletMap.fitBounds(bounds, { padding: [30, 30] });
+        }
+      }, 50);
+    }
+
+    function tryGeolocation() {
+      if (!navigator.geolocation) {
+        showManualEntry("Your browser doesn't support geolocation. Enter your coordinates manually.");
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        function (pos) {
+          fetchDistance(pos.coords.latitude, pos.coords.longitude);
+        },
+        function (err) {
+          console.log("Geolocation failed:", err);
+          showManualEntry("Location access was blocked or denied. Enter your coordinates manually instead.");
+        },
+        { timeout: 8000, maximumAge: 60000 }
+      );
+    }
+
+    function startWidget() {
+      ZOHO.embeddedApp.on("PageLoad", function (data) {
+        var recordId = data.EntityId;
+        if (Object.prototype.toString.call(recordId) === "[object Array]") {
+          recordId = recordId[0];
+        }
+        if (!recordId) {
+          showError("Could not read record ID.");
+          return;
+        }
+        currentContactId = recordId.toString();
+
+        document.getElementById("manual-submit").addEventListener("click", function () {
+          var lat = document.getElementById("lat-input").value.trim();
+          var lng = document.getElementById("lng-input").value.trim();
+          if (!lat || !lng) {
+            alert("Please enter both latitude and longitude.");
+            return;
+          }
+          fetchDistance(lat, lng);
+        });
+
+        tryGeolocation();
+      });
+
+      ZOHO.embeddedApp.init();
+    }
+
+    var sdkTries = 0;
+    var sdkTimer = setInterval(function () {
+      sdkTries++;
+      if (typeof ZOHO !== "undefined" && ZOHO.embeddedApp) {
+        clearInterval(sdkTimer);
+        startWidget();
+      } else if (sdkTries >= 40) {
+        clearInterval(sdkTimer);
+        showError("Zoho SDK not loaded even after 10 sec.");
+      }
+    }, 250);
+  </script>
+</body>
+</html>
